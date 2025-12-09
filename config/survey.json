@@ -1,0 +1,83 @@
+{
+  "title": "Car Ownership Study",
+  "description": "A survey about car ownership and preferences",
+
+  "questions": {
+    "age": {
+      "partial_title": "How old are you",
+      "type": "choice"
+    },
+    "car_ownership": {
+      "partial_title": "Do you currently own a car",
+      "type": "choice"
+    },
+    "car_brand": {
+      "partial_title": "Which car brand",
+      "type": "choices"
+    }
+  },
+
+  "segmentation": {
+    "default_segment": "Terminated",
+    "default_status": "terminated",
+    "rules": [
+      {
+        "segment": "Customer",
+        "status": "completed",
+        "conditions": {
+          "age": {
+            "exclude": ["Under 18"],
+            "operator": "not_contains"
+          },
+          "car_ownership": {
+            "values": ["Yes", "true", "True"],
+            "operator": "in"
+          },
+          "car_brand": {
+            "values": ["BMW"],
+            "operator": "contains",
+            "type": "list"
+          }
+        }
+      },
+      {
+        "segment": "Potential Customer",
+        "status": "completed",
+        "conditions": {
+          "age": {
+            "exclude": ["Under 18"],
+            "operator": "not_contains"
+          },
+          "car_ownership": {
+            "values": ["Yes", "true", "True"],
+            "operator": "in"
+          },
+          "car_brand": {
+            "values": ["Mercedes-Benz", "Audi"],
+            "operator": "contains_any",
+            "type": "list"
+          }
+        }
+      }
+    ]
+  },
+
+  "interview": {
+    "title": "AI Interview",
+    "subtitles": {
+      "Customer": "BMW Owner Experience",
+      "Potential Customer": "Vehicle Preference Survey",
+      "Terminated": "Thank You",
+      "default": "Vehicle Preference Survey"
+    },
+    "welcomeMessage": "I will ask you a few questions about your car preferences. Please speak clearly.",
+    "resumeMessage": "You have an incomplete interview. We'll resume from where you left off."
+  },
+
+  "terminated": {
+    "title": "Thank You",
+    "message": "We appreciate you taking the time to complete our survey.\n\nBased on your responses, you do not meet the specific criteria required for the voice interview stage of this particular study.",
+    "icon": "🙏"
+  }
+}
+

@@ -14,7 +14,11 @@ A two-part system (FastAPI + React/Vite) that collects survey responses from Typ
 
 ## Project Structure
 ```
+config/
+  survey.json       # Shared survey configuration (questions, segments, messages)
 backend/
+  config.py         # Config loader (reads config/survey.json)
+  segment_logic.py  # Segmentation engine (uses config)
   webhook.py         # FastAPI app + Typeform webhook
   interview.py       # Interview endpoints (session, complete, update-id, check-completion)
   models.py          # SQLAlchemy models (UserSession)
@@ -22,6 +26,7 @@ backend/
   schemas.py         # Pydantic schemas for Typeform payload
 frontend/
   src/
+    config.js       # Config loader (imports config/survey.json)
     App.jsx          # Routing & flow control
     components/
       Survey.jsx     # Typeform embed
@@ -43,6 +48,22 @@ Set in your shell or a `.env` (not committed):
 Must be prefixed with `VITE_` to be exposed:
 - `VITE_API_BASE_URL` – e.g. `http://localhost:8000`
 - `VITE_ELEVENLABS_AGENT_ID` – Same agent id used by backend.
+
+---
+
+## Configuration
+
+All survey-specific settings are centralized in `config/survey.json`. This single file is shared between backend and frontend, ensuring consistency. To adapt the application to a different survey:
+
+1. Update `config/survey.json` with your survey questions, segmentation rules, and messages
+2. Both backend and frontend automatically load from this file
+3. See `CONFIG_GUIDE.md` for detailed instructions
+
+**Key Configuration Sections:**
+- `questions`: Maps TypeForm question titles to internal keys
+- `segmentation`: Rules for determining user segments based on answers
+- `interview`: Interview titles and messages for each segment
+- `terminated`: Message shown to users who don't qualify
 
 ---
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { Conversation } from '@elevenlabs/client';
+import { SURVEY_CONFIG } from '../config';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 // In Vite, env vars must be prefixed with VITE_
@@ -257,14 +258,7 @@ const Interview = ({ userId, segment }) => {
           const response = await axios.get(`${API_BASE_URL}/api/interview/check-completion/${userId}`);
           const { is_complete } = response.data;
 
-          if (is_complete) {
-            setIsComplete(true);
-            // Optionally notify user or auto-end
-            // You can uncomment the line below to auto-end when complete
-            // handleEndInterview();
-          } else {
-            setIsComplete(false);
-          }
+          setIsComplete(is_complete);
         } catch (err) {
           console.error('Error checking completion:', err);
         }
@@ -399,9 +393,9 @@ const Interview = ({ userId, segment }) => {
       <div style={styles.container}>
         <div style={styles.card}>
           <div style={styles.header}>
-            <h1 style={styles.title}>AI Interview</h1>
+            <h1 style={styles.title}>{SURVEY_CONFIG.interview.title}</h1>
             <p style={styles.subtitle}>
-              {segment === 'Customer' ? 'BMW Owner Experience' : 'Vehicle Preference Survey'}
+              {SURVEY_CONFIG.interview.subtitles[segment] || SURVEY_CONFIG.interview.subtitles.default}
             </p>
           </div>
 
@@ -432,14 +426,14 @@ const Interview = ({ userId, segment }) => {
                 <p style={{ color: '#666', maxWidth: '400px' }}>
                   {canResume ? (
                     <>
-                      You have an incomplete interview. We'll resume from where you left off.
+                      {SURVEY_CONFIG.interview.resumeMessage}
                       <br /><br />
                       <small style={{ fontSize: '12px', color: '#999' }}>
                         Previous conversation will be used as context.
                       </small>
                     </>
                   ) : (
-                    'I will ask you a few questions about your car preferences. Please speak clearly.'
+                    SURVEY_CONFIG.interview.welcomeMessage
                   )}
                 </p>
                 <button onClick={handleStart} style={styles.buttonPrimary}>

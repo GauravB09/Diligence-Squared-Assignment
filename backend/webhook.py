@@ -6,6 +6,7 @@ from schemas import TypeformWebhookPayload
 from database import get_db, init_db
 from models import UserSession, SurveyStatus
 from interview import router as interview_router
+from segment_logic import determine_segment
 from datetime import datetime
 import logging
 import json
@@ -62,41 +63,8 @@ async def handle_typeform_webhook(request: Request, db: Session = Depends(get_db
         form_response = webhook_payload.form_response
         survey_responses = webhook_payload.form_response.get_answers_with_questions()
 
-        # Helper to find answer by partial title
-        def get_answer_value(partial_title):
-            for survey_response in survey_responses:
-                if partial_title.lower() in survey_response.get('question_title').lower():
-                    if survey_response.get('answer_type') == 'choice':
-                        return survey_response.get('answer').get('label')
-                    elif survey_response.get('answer_type') == 'choices':
-                        return survey_response.get('answer').get('labels')
-            return None
-
-        # Determine Segment
-        segment = "Terminated"
-        survey_status = SurveyStatus.TERMINATED
-
-        age_answer = get_answer_value("How old are you")
-        owns_car = get_answer_value("Do you currently own a car")
-        car_brands = get_answer_value("Which car brand")
-
-        # Logic Tree
-        is_adult = False
-        if age_answer:
-            if "Under 18" not in str(age_answer):
-                is_adult = True
-
-        if is_adult:
-            # Check Car Ownership
-            if owns_car in ["Yes", "true", "True"]:
-                # Check Brands
-                if car_brands and isinstance(car_brands, list):
-                    if "BMW" in car_brands:
-                        segment = "Customer"
-                        survey_status = SurveyStatus.COMPLETED
-                    elif "Mercedes-Benz" in car_brands or "Audi" in car_brands:
-                        segment = "Potential Customer"
-                        survey_status = SurveyStatus.COMPLETED
+        # Determine Segment using configuration-based logic
+        segment, survey_status = determine_segment(survey_responses)
 
         # Check if user session already exists
         user_session = db.query(UserSession).filter(UserSession.user_id == user_id).first()

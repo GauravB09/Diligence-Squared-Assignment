@@ -4,6 +4,7 @@ import axios from 'axios'
 import './App.css'
 import Survey from './components/Survey'
 import Interview from './components/Interview'
+import { SURVEY_CONFIG } from './config'
 
 // Use environment variable or fallback to localhost for dev
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
@@ -148,16 +149,14 @@ function SurveyRoute() {
   }
 
   if (appState === 'terminated') {
+    const terminatedConfig = SURVEY_CONFIG.terminated;
     return (
       <div style={styles.container}>
         <div style={styles.card}>
-          <div style={{ fontSize: '48px', marginBottom: '20px' }}>🙏</div>
-          <h1 style={{ color: '#2c3e50', marginBottom: '15px' }}>Thank You</h1>
-          <p style={{ color: '#666', lineHeight: '1.6', marginBottom: '30px' }}>
-            We appreciate you taking the time to complete our survey.
-            <br/><br/>
-            Based on your responses, you do not meet the specific criteria required for the
-            voice interview stage of this particular study.
+          <div style={{ fontSize: '48px', marginBottom: '20px' }}>{terminatedConfig.icon}</div>
+          <h1 style={{ color: '#2c3e50', marginBottom: '15px' }}>{terminatedConfig.title}</h1>
+          <p style={{ color: '#666', lineHeight: '1.6', marginBottom: '30px', whiteSpace: 'pre-line' }}>
+            {terminatedConfig.message}
           </p>
           <div style={{ fontSize: '12px', color: '#999', marginTop: '20px' }}>
             You may close this window.
@@ -188,7 +187,7 @@ function SurveyRoute() {
     <div style={{ padding: '20px' }}>
       {appState === 'survey' ? (
         <>
-          <h1 style={{ textAlign: 'center', marginBottom: '30px' }}>Car Ownership Study</h1>
+          <h1 style={{ textAlign: 'center', marginBottom: '30px' }}>{SURVEY_CONFIG.title}</h1>
           <Survey
             formId={form_id || "g5SbNP3q"}
             userId={finalUserId}
