@@ -2,8 +2,9 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { Conversation } from '@elevenlabs/client';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://overclinically-asphaltlike-bernarda.ngrok-free.dev';
-const ELEVENLABS_AGENT_ID = 'agent_7501kbwz9masffca24mjt1x1pawb';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+// In Vite, env vars must be prefixed with VITE_
+const ELEVENLABS_AGENT_ID = import.meta.env.VITE_ELEVENLABS_AGENT_ID;
 
 /**
  * Interview component that uses ElevenLabs HTML embed widget to create a connection to the AI agent
@@ -11,14 +12,110 @@ const ELEVENLABS_AGENT_ID = 'agent_7501kbwz9masffca24mjt1x1pawb';
  *
  * @param {string} userId - The user ID to start the conversation with
  * @param {string} segment - The user's segment (e.g., "Customer", "Potential Customer", "Terminated")
- * @param {string} agentId - Optional ElevenLabs agent ID (defaults to the provided one)
  */
 const Interview = ({ userId, segment }) => {
     const [isConnected, setIsConnected] = useState(false);
     const [isSpeaking, setIsSpeaking] = useState(false);
     const [transcript, setTranscript] = useState(null);
+    const [previousTranscript, setPreviousTranscript] = useState(null);
     const [isFinishing, setIsFinishing] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isComplete, setIsComplete] = useState(false);
+    const [canResume, setCanResume] = useState(false);
     const conversationRef = useRef(null);
+
+    // Check for existing transcript and completion status on component mount
+    useEffect(() => {
+      const checkExistingTranscript = async () => {
+        setIsLoading(true);
+
+        if (!userId) {
+          setIsLoading(false);
+          return;
+        }
+
+        try {
+          // Get session info including accumulated transcript (all previous sessions combined)
+          const sessionResponse = await axios.get(`${API_BASE_URL}/api/interview/session/${userId}`);
+          const { transcript: existingTranscript } = sessionResponse.data;
+
+          if (existingTranscript && existingTranscript.trim()) {
+            // existingTranscript contains all accumulated transcripts from previous sessions
+            // Check if conversation is complete
+            try {
+              const completionResponse = await axios.get(`${API_BASE_URL}/api/interview/check-completion/${userId}`);
+              const { is_complete } = completionResponse.data;
+
+              setIsComplete(is_complete);
+
+              if (is_complete) {
+                // Conversation is complete, show accumulated transcript
+                setTranscript(existingTranscript);
+              } else {
+                // Conversation is incomplete, can resume with accumulated transcript
+                setPreviousTranscript(existingTranscript);
+                setCanResume(true);
+                setTranscript(null); // Don't show transcript view, allow resumption
+              }
+            } catch (error) {
+              console.error('Error checking completion:', error);
+              // If check fails, assume incomplete and allow resume with accumulated transcript
+              setPreviousTranscript(existingTranscript);
+              setCanResume(true);
+            }
+          }
+        } catch (error) {
+          console.error('Error checking for existing transcript:', error);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      checkExistingTranscript();
+    }, [userId]);
+
+    // Add spinner animation styles
+    useEffect(() => {
+      const styleSheet = document.createElement("style");
+      styleSheet.innerText = `
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      `;
+      document.head.appendChild(styleSheet);
+      return () => {
+        if (document.head.contains(styleSheet)) {
+          document.head.removeChild(styleSheet);
+        }
+      };
+    }, []);
+
+    // Auto-save transcript when user closes the tab or refreshes
+    useEffect(() => {
+        const handleTabClose = () => {
+          // Only attempt to save if we actually have an active conversation
+          if (isConnected && userId) {
+            // We use 'fetch' with 'keepalive: true' because standard axios requests
+            // are killed immediately when the page unloads.
+            fetch(`${API_BASE_URL}/api/interview/complete/${userId}`, {
+              method: 'POST',
+              keepalive: true,
+              headers: {
+                'Content-Type': 'application/json',
+              },
+            }).catch(err => console.error("Auto-save failed:", err));
+          }
+        };
+
+        // Add the listener
+        window.addEventListener('beforeunload', handleTabClose);
+
+        // Cleanup
+        return () => {
+          window.removeEventListener('beforeunload', handleTabClose);
+        };
+      }, [userId, isConnected]);
 
     // Cleanup on unmount to stop audio if user navigates away
     useEffect(() => {
@@ -31,23 +128,35 @@ const Interview = ({ userId, segment }) => {
 
     const handleStart = async () => {
       try {
+        if (!ELEVENLABS_AGENT_ID) {
+            alert('ELEVENLABS_AGENT_ID is not configured. Please set VITE_ELEVENLABS_AGENT_ID in your environment.');
+          return;
+        }
+
         // 1. Request Microphone Permission explicitly
         await navigator.mediaDevices.getUserMedia({ audio: true });
 
-        // 2. Initialize Conversation directly from the Client SDK
-        const conversation = await Conversation.startSession({
+        // 2. Prepare dynamic variables for the conversation
+        const dynamicVariables = {
+          _user_segment_: segment || "General"
+        };
+
+        // Add previous transcript as dynamic variable if it exists (for resuming conversation)
+        // This transcript is accumulated from all previous conversation sessions
+        if (previousTranscript && previousTranscript.trim()) {
+          dynamicVariables._previous_transcript_ = previousTranscript;
+        }
+
+        // 3. Initialize Conversation directly from the Client SDK
+        const conversationConfig = {
           agentId: ELEVENLABS_AGENT_ID,
-          // Passing the dynamic variable for your segmentation logic
-          dynamicVariables: {
-            _user_segment_: segment || "General"
-          },
+          // Passing dynamic variables including segment and previous transcript
+          dynamicVariables: dynamicVariables,
           // Callbacks to update UI state
           onConnect: () => {
-            console.log('Connected to AI');
             setIsConnected(true);
           },
           onDisconnect: () => {
-            console.log('Disconnected from AI');
             setIsConnected(false);
             setIsSpeaking(false);
           },
@@ -59,20 +168,24 @@ const Interview = ({ userId, segment }) => {
             // 'speaking' means the AI is talking, 'listening' means it's waiting for you
             setIsSpeaking(mode.mode === 'speaking');
           },
-        });
+        };
+
+        const conversation = await Conversation.startSession(conversationConfig);
 
         conversationRef.current = conversation;
 
-        // 3. Sync the Real Conversation ID to Backend
+        // 4. Sync the Real Conversation ID to Backend
         // The raw conversation object has the ID immediately available
         const conversationId = conversation.getId();
         if (conversationId) {
-          console.log('Syncing Conversation ID:', conversationId);
-          // We use the ID to fetch transcripts later
+          // Update the conversation ID in the database
           await axios.post(`${API_BASE_URL}/api/interview/update-id`, {
             user_id: userId,
             conversation_id: conversationId
           });
+
+          // Note: We keep previousTranscript until the new conversation is fully established
+          // It will be cleared when the new transcript is saved
         }
 
       } catch (err) {
@@ -93,11 +206,39 @@ const Interview = ({ userId, segment }) => {
       // 2. Fetch Transcript
       try {
         // Wait a brief moment for ElevenLabs to finalize the log
-        await new Promise(r => setTimeout(r, 5000)); // Kept 5s to be safe
+        await new Promise(r => setTimeout(r, 3000));
 
         const response = await axios.post(`${API_BASE_URL}/api/interview/complete/${userId}`);
         if (response.data.status === 'success') {
-          setTranscript(response.data.transcript);
+          // Backend returns the full accumulated transcript (all previous + new)
+          const accumulatedTranscript = response.data.transcript;
+          setTranscript(accumulatedTranscript);
+
+          // Check if conversation is complete
+          try {
+            const completionResponse = await axios.get(`${API_BASE_URL}/api/interview/check-completion/${userId}`);
+            const { is_complete } = completionResponse.data;
+            setIsComplete(is_complete);
+
+            if (!is_complete) {
+              // If incomplete, allow resumption
+              // Store the accumulated transcript so it can be passed to the next conversation
+              setPreviousTranscript(accumulatedTranscript);
+              setCanResume(true);
+              setTranscript(null); // Clear transcript state to show interview interface
+              setIsConnected(false); // Reset connection state for resume
+            } else {
+              // Conversation is complete, clear resume state
+              setPreviousTranscript(null);
+              setCanResume(false);
+            }
+          } catch (err) {
+            console.error('Error checking completion:', err);
+            // On error, assume incomplete and allow resume with accumulated transcript
+            setPreviousTranscript(accumulatedTranscript);
+            setCanResume(true);
+            setTranscript(null);
+          }
         }
       } catch (err) {
         console.error('Failed to fetch transcript:', err);
@@ -106,6 +247,33 @@ const Interview = ({ userId, segment }) => {
         setIsFinishing(false);
       }
     };
+
+    // Periodically check if conversation is complete while connected
+    useEffect(() => {
+      if (!isConnected || isFinishing) return;
+
+      const checkCompletion = async () => {
+        try {
+          const response = await axios.get(`${API_BASE_URL}/api/interview/check-completion/${userId}`);
+          const { is_complete } = response.data;
+
+          if (is_complete) {
+            setIsComplete(true);
+            // Optionally notify user or auto-end
+            // You can uncomment the line below to auto-end when complete
+            // handleEndInterview();
+          } else {
+            setIsComplete(false);
+          }
+        } catch (err) {
+          console.error('Error checking completion:', err);
+        }
+      };
+
+      // Check every 30 seconds while conversation is active
+      const interval = setInterval(checkCompletion, 30000);
+      return () => clearInterval(interval);
+    }, [isConnected, isFinishing, userId]);
 
     // Download transcript as text file
     const downloadTranscript = () => {
@@ -183,6 +351,22 @@ const Interview = ({ userId, segment }) => {
       }, 250);
     };
 
+    // Show loading state while checking for existing transcript
+    if (isLoading) {
+      return (
+        <div style={styles.container}>
+          <div style={styles.card}>
+            <div style={styles.content}>
+              <div style={styles.idleContainer}>
+                <div style={styles.spinner}></div>
+                <p style={{ color: '#666', marginTop: '20px' }}>Loading...</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     // --- RENDER: TRANSCRIPT VIEW ---
     if (transcript) {
       return (
@@ -191,6 +375,9 @@ const Interview = ({ userId, segment }) => {
             <h2 style={{ color: '#2c3e50', borderBottom: '1px solid #eee', paddingBottom: '15px' }}>
               Interview Completed
             </h2>
+            <p style={{ color: '#666', fontSize: '14px', marginBottom: '20px' }}>
+              Your interview transcript is available below. You can download or print it.
+            </p>
             <div style={styles.transcriptBox}>
               {transcript}
             </div>
@@ -239,14 +426,45 @@ const Interview = ({ userId, segment }) => {
               // IDLE STATE
               <div style={styles.idleContainer}>
                 <div style={styles.iconLarge}>👋</div>
-                <h3>Ready to begin?</h3>
+                <h3>
+                  {canResume ? 'Resume Interview' : 'Ready to begin?'}
+                </h3>
                 <p style={{ color: '#666', maxWidth: '400px' }}>
-                  I will ask you a few questions about your car preferences.
-                  Please speak clearly.
+                  {canResume ? (
+                    <>
+                      You have an incomplete interview. We'll resume from where you left off.
+                      <br /><br />
+                      <small style={{ fontSize: '12px', color: '#999' }}>
+                        Previous conversation will be used as context.
+                      </small>
+                    </>
+                  ) : (
+                    'I will ask you a few questions about your car preferences. Please speak clearly.'
+                  )}
                 </p>
                 <button onClick={handleStart} style={styles.buttonPrimary}>
-                  Start Conversation
+                  {canResume ? 'Resume Conversation' : 'Start Conversation'}
                 </button>
+                <div style={{ marginTop: '30px', borderTop: '1px solid #eee', paddingTop: '20px', width: '100%' }}>
+                    <p style={{ fontSize: '13px', color: '#888' }}>
+                        Already finished speaking with the AI?
+                    </p>
+                    <button
+                        onClick={() => setTranscript(previousTranscript)} // Force show transcript
+                        style={{
+                            background: 'transparent',
+                            border: '1px solid #ccc',
+                            color: '#666',
+                            padding: '8px 16px',
+                            borderRadius: '4px',
+                            cursor: 'pointer',
+                            fontSize: '13px',
+                            marginBottom: '20px'
+                        }}
+                    >
+                        Mark Interview as Complete
+                    </button>
+                </div>
               </div>
             )}
           </div>
@@ -287,7 +505,8 @@ const Interview = ({ userId, segment }) => {
       overflow: 'hidden',
       display: 'flex',
       flexDirection: 'column',
-      height: '600px',
+      minHeight: '600px',
+      height: 'auto',
     },
     header: {
       padding: '30px',
@@ -381,6 +600,14 @@ const Interview = ({ userId, segment }) => {
       whiteSpace: 'pre-wrap',
       margin: '20px 0',
       border: '1px solid #eee',
+    },
+    spinner: {
+      width: '40px',
+      height: '40px',
+      border: '4px solid #f3f3f3',
+      borderTop: '4px solid #667eea',
+      borderRadius: '50%',
+      animation: 'spin 1s linear infinite',
     },
   };
 

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/interview", tags=["interview"])
 
 # Initialize ElevenLabs configuration
-ELEVENLABS_AGENT_ID = os.getenv("ELEVENLABS_AGENT_ID", "agent_7501kbwz9masffca24mjt1x1pawb")
+ELEVENLABS_AGENT_ID = os.getenv("ELEVENLABS_AGENT_ID")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
 if not ELEVENLABS_AGENT_ID:
@@ -72,18 +72,25 @@ async def start_interview(
                 detail=f"User session not found for user_id: {user_id}. Please complete the survey first."
             )
 
+        if user_session.elevenlabs_conversation_id:
+            try:
+                # We await the completion logic to fetch & append the old transcript
+                # to the database before the new session overwrites the ID.
+                await complete_interview(user_id, db)
+            except Exception:
+                # If saving fails (e.g. API error), we proceed anyway so the user
+                # isn't blocked from starting their new interview.
+                pass
+
         # Generate a conversation_id for tracking
         # The ElevenLabs widget will handle the actual conversation creation
         # We generate a UUID to track this conversation session
         conversation_id = str(uuid.uuid4())
-        logger.info(f"Generated conversation_id {conversation_id} for user {user_id}")
 
         # Update user session with conversation_id
         user_session.elevenlabs_conversation_id = conversation_id
         db.commit()
         db.refresh(user_session)
-
-        logger.info(f"Updated user session {user_id} with conversation_id {conversation_id}")
 
         return StartInterviewResponse(
             conversation_id=conversation_id,
@@ -109,14 +116,10 @@ async def get_session_info(
     """
     Get session information including conversation_id for a user.
     """
-    print(f"Debug: Blehh")
     try:
-        print(f"Debug: Getting session info for user_id: {user_id}")
         user_session = db.query(UserSession).filter(
             UserSession.user_id == user_id
         ).first()
-
-        print(f"Debug: User session found: {user_session}")
 
         if not user_session:
             raise HTTPException(
@@ -131,20 +134,12 @@ async def get_session_info(
             else:
                 status_val = str(user_session.survey_status)
 
-        print(f"Debug: User session status: {user_session.survey_status}")
-        print(f"Debug: User session status value: {user_session.survey_status.value if hasattr(user_session.survey_status, 'value') else str(user_session.survey_status)}")
-
-        segment_val = user_session.segment if user_session.segment else "Terminated"
-        print(f"Debug: User session segment: {user_session.segment}")
-        print(f"Debug: User session segment value: {user_session.segment if user_session.segment else 'Terminated'}")
-
-        print(f"API RESPONSE -> ID: {user_id}, Status: {status_val}, Segment: {segment_val}")
-
         return {
             "user_id": user_session.user_id,
             "conversation_id": user_session.elevenlabs_conversation_id,
             "segment": user_session.segment or "Terminated",
             "survey_status": status_val,
+            "transcript": user_session.transcript,
             "created_at": user_session.created_at.isoformat() if user_session.created_at else None
         }
 
@@ -163,14 +158,17 @@ async def complete_interview(
     db: Session = Depends(get_db)
 ):
     """
-    Mark interview as complete, fetch transcript from ElevenLabs, and store it.
+    Mark interview as complete, fetch transcript from ElevenLabs, and store it in the database.
     """
     if not ELEVENLABS_API_KEY:
         raise HTTPException(500, "Server misconfiguration: Missing ELEVENLABS_API_KEY")
 
     user_session = db.query(UserSession).filter(UserSession.user_id == user_id).first()
-    if not user_session or not user_session.elevenlabs_conversation_id:
-        raise HTTPException(404, "Active conversation not found")
+    if not user_session:
+        raise HTTPException(404, f"User session not found for user_id: {user_id}")
+
+    if not user_session.elevenlabs_conversation_id:
+        raise HTTPException(404, "No conversation ID found for this user session")
 
     conversation_id = user_session.elevenlabs_conversation_id
 
@@ -179,38 +177,68 @@ async def complete_interview(
         url = f"https://api.elevenlabs.io/v1/convai/conversations/{conversation_id}"
         headers = {"xi-api-key": ELEVENLABS_API_KEY}
 
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
 
         data = response.json()
 
-        # 2. Extract Transcript (the 'transcript' field contains the list of messages)
-        # We format it as a readable string
         transcript_messages = data.get("transcript", [])
+        # 2. Extract Transcript - handle different possible response structures
         formatted_transcript = ""
-        for msg in transcript_messages:
-            role = msg.get("role", "unknown")
-            text = msg.get("message", "") # or "text" depending on API version
-            formatted_transcript += f"[{role.upper()}]: {text}\n"
 
-        # 3. Save to Database
-        user_session.transcript = formatted_transcript
-        # Optional: Update status if you want to lock the session
-        # user_session.survey_status = "completed_interview"
+        if isinstance(transcript_messages, list) and len(transcript_messages) > 0:
+            for msg in transcript_messages:
+                if isinstance(msg, dict):
+                    role = msg.get("role", "unknown")
+                    text = msg.get("message") or msg.get("text") or ""
+                    if text:
+                        formatted_transcript += f"[{role.upper()}]: {text}\n"
+                elif isinstance(msg, str):
+                    formatted_transcript += f"{msg}\n"
+        elif isinstance(transcript_messages, str):
+            formatted_transcript = transcript_messages
+        else:
+            logger.warning(f"Unexpected transcript format. Response keys: {list(data.keys())}")
 
+        # 3. Append to existing transcript (if any) and save to Database
+        new_transcript = formatted_transcript.strip()
+        existing_transcript = user_session.transcript or ""
+
+        # If there's existing transcript, append the new one with a separator
+        if existing_transcript and existing_transcript.strip():
+            # Add a separator to distinguish between conversation sessions
+            separator = "\n\n" + "="*80 + "\n"
+            separator += f"--- Conversation Resumed ---\n"
+            separator += "="*80 + "\n\n"
+            combined_transcript = existing_transcript + separator + new_transcript
+            user_session.transcript = combined_transcript
+        else:
+            # First transcript, just save it
+            user_session.transcript = new_transcript
+
+        # Commit the transaction
         db.commit()
+        db.refresh(user_session)
 
+        # Return the full accumulated transcript
         return {
             "status": "success",
-            "transcript": formatted_transcript
+            "transcript": user_session.transcript,  # Return the full accumulated transcript
+            "new_transcript": new_transcript,  # Also return just the new portion
+            "message": "Transcript saved successfully"
         }
 
+    except requests.exceptions.HTTPError as e:
+        error_detail = f"HTTP {e.response.status_code}: {e.response.text if hasattr(e, 'response') else str(e)}"
+        logger.error(f"ElevenLabs API HTTP Error: {error_detail}")
+        raise HTTPException(502, f"Failed to retrieve transcript from ElevenLabs: {error_detail}")
     except requests.exceptions.RequestException as e:
-        logger.error(f"ElevenLabs API Error: {str(e)}")
-        raise HTTPException(502, f"Failed to retrieve transcript: {str(e)}")
+        logger.error(f"ElevenLabs API Request Error: {str(e)}")
+        raise HTTPException(502, f"Failed to connect to ElevenLabs API: {str(e)}")
     except Exception as e:
-        logger.error(f"Error saving transcript: {str(e)}")
-        raise HTTPException(500, f"Internal error: {str(e)}")
+        logger.error(f"Error saving transcript: {str(e)}", exc_info=True)
+        db.rollback()  # Rollback on error
+        raise HTTPException(500, f"Internal error while saving transcript: {str(e)}")
 
 
 @router.post("/update-id")
@@ -228,5 +256,69 @@ async def update_conversation_id(
 
     user_session.elevenlabs_conversation_id = request.conversation_id
     db.commit()
+    db.refresh(user_session)
 
     return {"status": "updated"}
+
+
+@router.get("/check-completion/{user_id}")
+async def check_conversation_completion(
+    user_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Check if the conversation is complete by analyzing the transcript.
+    Returns whether all questions have been answered.
+    """
+    try:
+        user_session = db.query(UserSession).filter(UserSession.user_id == user_id).first()
+
+        if not user_session:
+            raise HTTPException(404, f"User session not found for user_id: {user_id}")
+
+        transcript = user_session.transcript
+
+        if not transcript or not transcript.strip():
+            return {
+                "is_complete": False,
+                "has_transcript": False,
+                "message": "No transcript available"
+            }
+
+        # Simple heuristic: Check if transcript contains completion indicators
+        # You can customize this based on your agent's behavior
+        transcript_lower = transcript.lower()
+
+        # Check for completion indicators
+        completion_indicators = [
+            "that's all",
+            "completed",
+            "all questions answered",
+            "concludes",
+            "valuable feedback",
+            "Have a great day"
+        ]
+
+        # Check for question-answer patterns
+        # Count AGENT and USER messages
+        agent_messages = len(transcript.split('[AGENT]:')) - 1
+        user_messages = len(transcript.split('[USER]:')) - 1
+
+        # If there are multiple exchanges and the last message suggests completion
+        is_complete = (
+            (any(indicator in transcript_lower for indicator in completion_indicators) or
+             (agent_messages >= 13 and user_messages >= 13))
+        )
+
+        return {
+            "is_complete": is_complete,
+            "has_transcript": True,
+            "transcript_length": len(transcript),
+            "message": "Complete" if is_complete else "Incomplete - can resume"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking conversation completion: {str(e)}", exc_info=True)
+        raise HTTPException(500, f"Error checking completion: {str(e)}")

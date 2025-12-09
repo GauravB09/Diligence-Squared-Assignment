@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Routes, Route, useParams, useSearchParams } from 'react-router-dom'
 import axios from 'axios'
 import './App.css'
 import Survey from './components/Survey'
@@ -7,16 +8,26 @@ import Interview from './components/Interview'
 // Use environment variable or fallback to localhost for dev
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
-
+// Main App Component with Routing
 function App() {
-  const [userId] = useState(() => {
-    const searchParams = new URLSearchParams(window.location.search);
-    const urlUserId = searchParams.get('userId');
+  return (
+    <Routes>
+      <Route path="/survey/:form_id" element={<SurveyRoute />} />
+      <Route path="/" element={<DefaultRoute />} />
+    </Routes>
+  )
+}
 
-    if (urlUserId) {
-      console.log(`Using userId from URL: ${urlUserId}`);
-      localStorage.setItem('userId', urlUserId);
-      return urlUserId;
+// Survey Route Component - handles /survey/:form_id?userId=xxxxxx
+function SurveyRoute() {
+  const { form_id } = useParams();
+  const [searchParams] = useSearchParams();
+  const userId = searchParams.get('userId');
+
+  const [finalUserId] = useState(() => {
+    if (userId) {
+      localStorage.setItem('userId', userId);
+      return userId;
     }
 
     const storedUserId = localStorage.getItem('userId');
@@ -34,37 +45,10 @@ function App() {
   const [appState, setAppState] = useState('loading')
   const [userSegment, setUserSegment] = useState(null)
 
-  // 1. Check Session on Load (Resumption Logic)
-  useEffect(() => {
-    const checkSession = async () => {
-      try {
-        const response = await axios.get(`${API_BASE_URL}/api/interview/session/${userId}`);
-        const { survey_status, segment } = response.data;
-
-        handleRouting(survey_status, segment);
-
-      } catch (error) {
-        if (error.response && error.response.status === 404) {
-          // User has no session in DB -> New User
-          console.log('No session found, starting fresh');
-          setAppState('survey');
-        } else {
-          console.error('Error checking session:', error);
-          // Fallback to survey on error, or could show error screen
-          setAppState('survey');
-        }
-      }
-    };
-
-    checkSession();
-  }, [userId]);
-
-  // 2. Routing Helper Function
+  // Routing Helper Function
   const handleRouting = (status, segment) => {
     const safeStatus = (status || '').toLowerCase();
     const safeSegment = (segment || '').toLowerCase();
-
-    console.log(`Routing User: Status=[${safeStatus}], Segment=[${safeSegment}]`);
 
     // PRIORITY CHECK: Termination
     if (safeStatus === 'terminated' || safeSegment === 'terminated') {
@@ -90,9 +74,32 @@ function App() {
     }
   };
 
-  // 3. Handle Survey Submission (The "Processing" Step)
+  // Check Session on Load (Resumption Logic)
+  useEffect(() => {
+    const checkSession = async () => {
+      try {
+        const response = await axios.get(`${API_BASE_URL}/api/interview/session/${finalUserId}`);
+        const { survey_status, segment } = response.data;
+
+        handleRouting(survey_status, segment);
+
+      } catch (error) {
+        if (error.response && error.response.status === 404) {
+          // User has no session in DB -> New User
+          setAppState('survey');
+        } else {
+          console.error('Error checking session:', error);
+          // Fallback to survey on error, or could show error screen
+          setAppState('survey');
+        }
+      }
+    };
+
+    checkSession();
+  }, [finalUserId, appState]);
+
+  // Handle Survey Submission (The "Processing" Step)
   const handleFormSubmit = async (event) => {
-    console.log('Survey submitted, waiting for webhook processing...', event);
     setAppState('processing');
 
     // Poll the backend until the webhook updates the status
@@ -103,7 +110,7 @@ function App() {
     const pollInterval = setInterval(async () => {
       attempts++;
       try {
-        const response = await axios.get(`${API_BASE_URL}/api/interview/session/${userId}`);
+        const response = await axios.get(`${API_BASE_URL}/api/interview/session/${finalUserId}`);
         const { survey_status, segment } = response.data;
 
         if (survey_status !== 'pending') {
@@ -111,19 +118,17 @@ function App() {
           handleRouting(survey_status, segment);
         }
       } catch (e) {
-        console.log('Polling waiting for session creation...');
+        // Polling waiting for session creation
       }
 
       if (attempts >= maxAttempts) {
         clearInterval(pollInterval);
-        if (appState === 'processing') {
-          alert("We received your response but are taking longer than expected to process it. Please refresh the page in a moment.");
-        }
+        setAppState('timeout_error');
       }
-    }, 2000);
+    }, 1000);
   }
 
-  // 5. Render Views
+  // Render Views
   if (appState === 'loading') {
     return (
       <div style={styles.container}>
@@ -162,23 +167,52 @@ function App() {
     );
   }
 
+  if (appState === 'timeout_error') {
+    return (
+        <div style={styles.container}>
+            <div style={styles.card}>
+                <h2>Status Check Timed Out</h2>
+                <p>We received your survey, but the system is taking longer than expected to process the results.</p>
+                <button
+                    onClick={() => window.location.reload()}
+                    style={styles.button}
+                >
+                    Check Again / Refresh
+                </button>
+            </div>
+        </div>
+    );
+  }
+
   return (
     <div style={{ padding: '20px' }}>
       {appState === 'survey' ? (
         <>
           <h1 style={{ textAlign: 'center', marginBottom: '30px' }}>Car Ownership Study</h1>
           <Survey
-            formId="g5SbNP3q"
-            userId={userId}
+            formId={form_id || "g5SbNP3q"}
+            userId={finalUserId}
             onSubmit={handleFormSubmit}
           />
         </>
       ) : (
         <Interview
-          userId={userId}
+          userId={finalUserId}
           segment={userSegment}
         />
       )}
+    </div>
+  )
+}
+
+// Default Route Component (for root path)
+function DefaultRoute() {
+  return (
+    <div style={styles.container}>
+      <div style={styles.card}>
+        <h1>Welcome</h1>
+        <p>Please use the survey route: <code>/survey/:form_id?userId=xxxxxx</code></p>
+      </div>
     </div>
   )
 }

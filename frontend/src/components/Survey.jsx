@@ -31,20 +31,13 @@ const Survey = ({
     );
   }
 
-  const handleTypeformSubmit = (event) => {
-    console.log("🔥 TYPEFORM WIDGET FIRED ONSUBMIT EVENT 🔥", event);
-    if (onSubmit) {
-        onSubmit(event);
-    }
-  };
-
   return (
     <div style={{ width: '100%', margin: '0 auto' }}>
       <Widget
         id={formId}
         style={style}
         hidden={{ user_id: userId }}
-        onSubmit={handleTypeformSubmit}
+        onSubmit={onSubmit}
       />
     </div>
   );

@@ -46,13 +46,10 @@ async def handle_typeform_webhook(request: Request, db: Session = Depends(get_db
     try:
         # Parse the incoming JSON payload
         payload_data = await request.json()
-        print(f"----- RAW PAYLOAD RECEIVED -----\n{json.dumps(payload_data, indent=2)}")
 
         # Parse and validate the payload using Pydantic schema
         webhook_payload = TypeformWebhookPayload(**payload_data)
         user_id = webhook_payload.get_user_id()
-
-        logger.info(f"Processing User ID: {user_id}")
 
         if not user_id:
             logger.warning("Invalid or Missing User ID. Ignoring.")
@@ -83,8 +80,6 @@ async def handle_typeform_webhook(request: Request, db: Session = Depends(get_db
         owns_car = get_answer_value("Do you currently own a car")
         car_brands = get_answer_value("Which car brand")
 
-        logger.info(f"Extracted Answers -> Age: {age_answer}, Car: {owns_car}, Brand: {car_brands}")
-
         # Logic Tree
         is_adult = False
         if age_answer:
@@ -103,9 +98,6 @@ async def handle_typeform_webhook(request: Request, db: Session = Depends(get_db
                         segment = "Potential Customer"
                         survey_status = SurveyStatus.COMPLETED
 
-        logger.info(f"FINAL DECISION -> Segment: {segment}, Status: {survey_status}")
-        print(f"FINAL DECISION -> Segment: {segment}, Status: {survey_status}")
-
         # Check if user session already exists
         user_session = db.query(UserSession).filter(UserSession.user_id == user_id).first()
 
@@ -122,7 +114,6 @@ async def handle_typeform_webhook(request: Request, db: Session = Depends(get_db
             user_session.survey_status = survey_status
             user_session.segment = segment
             user_session.submitted_at = submitted_at
-            logger.info(f"Updated existing session for user_id: {user_id}")
         else:
             # Create new session
             user_session = UserSession(
@@ -135,12 +126,9 @@ async def handle_typeform_webhook(request: Request, db: Session = Depends(get_db
                 submitted_at=submitted_at
             )
             db.add(user_session)
-            logger.info(f"Created new session for user_id: {user_id}")
 
         # Commit changes to database
         db.commit()
-        logger.info("Database Commit Successful")
-        print("Database Commit Successful")
 
         # Return success response
         return JSONResponse(

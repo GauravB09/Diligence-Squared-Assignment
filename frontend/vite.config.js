@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     allowedHosts: [
-      '34a06f313367b0.lhr.life'
+      'e2e9e38a572286.lhr.life'
     ]
   }
 })
